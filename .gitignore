@@ -1,0 +1,6 @@
+__pycache__/
+*.py[cod]
+lume.db
+.env
+.venv/
+venv/

@@ -1,0 +1,9 @@
+{
+  "name": "lume-travel",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Lume Travel storefront with a SQLite-backed login API",
+  "scripts": {
+    "start": "py server.py"
+  }
+}
