@@ -6,8 +6,10 @@ import json
 import os
 import secrets
 import sqlite3
+import threading
 import urllib.error
 import urllib.request
+from http.cookies import SimpleCookie
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -24,6 +26,10 @@ ROOT = Path(__file__).parent
 DATABASE = ROOT / "lume.db"
 DATABASE_URL = os.getenv("DATABASE_URL") or os.getenv("NEON_DATABASE_URL") or os.getenv("POSTGRES_URL")
 PORT = int(os.getenv("PORT", "3000"))
+SESSION_COOKIE = "lume_session"
+SESSION_MAX_AGE = 7 * 24 * 60 * 60
+AUTH_ATTEMPTS: dict[str, list[float]] = {}
+AUTH_ATTEMPTS_LOCK = threading.Lock()
 PASSWORD_ITERATIONS = 600_000
 DEMO_EMAIL = "demo@lume.travel"
 DEMO_PASSWORD = "lume2025"
@@ -61,6 +67,43 @@ def verify_password(password: str, stored_hash: str) -> bool:
         return hmac.compare_digest(actual, expected)
     except (ValueError, TypeError):
         return False
+
+
+def validate_auth_input(email: str, password: str, name: str = "") -> str | None:
+    if len(email) > 254 or "@" not in email or email.startswith("@"):
+        return "Email chưa hợp lệ."
+    if len(password) < 8 or len(password) > 128:
+        return "Mật khẩu phải có từ 8 đến 128 ký tự."
+    if name and (len(name) > 100 or not name.strip()):
+        return "Tên không hợp lệ."
+    return None
+
+
+def auth_client_key(handler: BaseHTTPRequestHandler, route: str) -> str:
+    forwarded_for = handler.headers.get("X-Forwarded-For", "")
+    client_address = forwarded_for.split(",", 1)[0].strip() or handler.client_address[0]
+    return f"{client_address}:{route}"
+
+
+def auth_rate_limited(key: str) -> bool:
+    now = datetime.now(timezone.utc).timestamp()
+    with AUTH_ATTEMPTS_LOCK:
+        attempts = [timestamp for timestamp in AUTH_ATTEMPTS.get(key, []) if now - timestamp < 900]
+        AUTH_ATTEMPTS[key] = attempts
+        return len(attempts) >= 5
+
+
+def record_auth_failure(key: str) -> None:
+    now = datetime.now(timezone.utc).timestamp()
+    with AUTH_ATTEMPTS_LOCK:
+        attempts = [timestamp for timestamp in AUTH_ATTEMPTS.get(key, []) if now - timestamp < 900]
+        attempts.append(now)
+        AUTH_ATTEMPTS[key] = attempts
+
+
+def clear_auth_failures(key: str) -> None:
+    with AUTH_ATTEMPTS_LOCK:
+        AUTH_ATTEMPTS.pop(key, None)
 
 
 def is_postgres() -> bool:
@@ -210,6 +253,17 @@ def create_session(connection: sqlite3.Connection, user_id: int) -> str:
     return token
 
 
+def get_session_user(connection, token: str | None):
+    if not token:
+        return None
+    token_hash = hashlib.sha256(token.encode()).hexdigest()
+    return execute(
+        connection,
+        "SELECT users.id, users.email, users.name FROM sessions JOIN users ON users.id = sessions.user_id WHERE sessions.token_hash = ? AND sessions.expires_at > ?",
+        (token_hash, utc_now()),
+    ).fetchone()
+
+
 def ask_ai(message: str, history: list[dict]) -> str:
     provider = os.getenv("AI_PROVIDER", "").lower()
     gemini_key = os.getenv("GEMINI_API_KEY")
@@ -266,14 +320,28 @@ def local_assistant_reply(message: str) -> str:
 
 
 class LumeHandler(BaseHTTPRequestHandler):
-    def send_json(self, status: int, payload: dict) -> None:
+    def send_json(self, status: int, payload: dict, session_cookie: str | None = None) -> None:
         body = json.dumps(payload, ensure_ascii=False).encode()
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
-        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Origin", self.headers.get("Origin", "*"))
+        self.send_header("Vary", "Origin")
+        if session_cookie:
+            self.send_header("Set-Cookie", session_cookie)
         self.end_headers()
         self.wfile.write(body)
+
+    def session_token(self) -> str | None:
+        cookies = SimpleCookie()
+        cookies.load(self.headers.get("Cookie", ""))
+        session = cookies.get(SESSION_COOKIE)
+        return session.value if session else None
+
+    def session_cookie(self, token: str, max_age: int = SESSION_MAX_AGE) -> str:
+        secure = os.getenv("RENDER_EXTERNAL_URL", "").startswith("https://") or os.getenv("FORCE_SECURE_COOKIES") == "1"
+        flags = f"{SESSION_COOKIE}={token}; Max-Age={max_age}; Path=/; HttpOnly; SameSite=Lax"
+        return f"{flags}; Secure" if secure else flags
 
     def read_json(self) -> dict:
         length = int(self.headers.get("Content-Length", 0))
@@ -284,6 +352,13 @@ class LumeHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         route = urlparse(self.path).path
         try:
+            if route == "/api/logout":
+                token = self.session_token()
+                if token:
+                    with get_connection() as connection:
+                        token_hash = hashlib.sha256(token.encode()).hexdigest()
+                        execute(connection, "DELETE FROM sessions WHERE token_hash = ?", (token_hash,))
+                return self.send_json(200, {"message": "Bạn đã đăng xuất."}, self.session_cookie("", 0))
             data = self.read_json()
             if route == "/api/chat":
                 message = str(data.get("message", "")).strip()
@@ -330,12 +405,16 @@ class LumeHandler(BaseHTTPRequestHandler):
             password = str(data.get("password", ""))
             if not email or not password:
                 return self.send_json(400, {"message": "Email và mật khẩu là bắt buộc."})
+            name = str(data.get("name", "")).strip()
+            validation_message = validate_auth_input(email, password, name if route == "/api/register" else "")
+            if validation_message:
+                return self.send_json(400, {"message": validation_message})
+            rate_key = auth_client_key(self, route)
+            if route in ("/api/login", "/api/register") and auth_rate_limited(rate_key):
+                return self.send_json(429, {"message": "Quá nhiều lần thử. Vui lòng đợi 15 phút."})
 
             with get_connection() as connection:
                 if route == "/api/register":
-                    name = str(data.get("name", "")).strip()
-                    if not name:
-                        return self.send_json(400, {"message": "Vui lòng nhập tên của bạn."})
                     try:
                         insert_query = "INSERT INTO users (email, name, password_hash, created_at) VALUES (?, ?, ?, ?)"
                         if is_postgres():
@@ -345,15 +424,18 @@ class LumeHandler(BaseHTTPRequestHandler):
                         return self.send_json(409, {"message": "Email này đã được đăng ký."})
                     user_id = cursor.fetchone()["id"] if is_postgres() else cursor.lastrowid
                     token = create_session(connection, user_id)
-                    return self.send_json(201, {"message": "Tạo tài khoản thành công.", "token": token, "user": {"email": email, "name": name}})
+                    clear_auth_failures(rate_key)
+                    return self.send_json(201, {"message": "Tạo tài khoản thành công.", "user": {"email": email, "name": name}}, self.session_cookie(token))
 
                 if route == "/api/login":
                     user = execute(connection, "SELECT * FROM users WHERE email = ?", (email,)).fetchone()
                     if user is None or not verify_password(password, user["password_hash"]):
+                        record_auth_failure(rate_key)
                         return self.send_json(401, {"message": "Email hoặc mật khẩu chưa đúng."})
                     execute(connection, "UPDATE users SET last_login_at = ? WHERE id = ?", (utc_now(), user["id"]))
                     token = create_session(connection, user["id"])
-                    return self.send_json(200, {"message": "Đăng nhập thành công.", "token": token, "user": {"email": user["email"], "name": user["name"]}})
+                    clear_auth_failures(rate_key)
+                    return self.send_json(200, {"message": "Đăng nhập thành công.", "user": {"email": user["email"], "name": user["name"]}}, self.session_cookie(token))
 
             return self.send_json(404, {"message": "Không tìm thấy đường dẫn."})
         except (ValueError, json.JSONDecodeError):
@@ -363,13 +445,20 @@ class LumeHandler(BaseHTTPRequestHandler):
 
     def do_OPTIONS(self) -> None:
         self.send_response(204)
-        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Origin", self.headers.get("Origin", "*"))
+        self.send_header("Vary", "Origin")
         self.send_header("Access-Control-Allow-Methods", "POST, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
         self.end_headers()
 
     def do_GET(self) -> None:
         route = urlparse(self.path).path
+        if route == "/api/me":
+            with get_connection() as connection:
+                user = get_session_user(connection, self.session_token())
+            if user is None:
+                return self.send_json(401, {"message": "Chưa đăng nhập."})
+            return self.send_json(200, {"user": dict(user)})
         if route == "/api/destinations":
             return self.send_json(200, {"destinations": get_destinations(), "next_update": "Tự động thêm 1 địa danh mỗi giờ"})
         if route in ("/", "/index.html"):

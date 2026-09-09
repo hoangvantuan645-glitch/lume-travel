@@ -69,6 +69,14 @@ Schema PostgreSQL nằm trong `schema.sql`, gồm users, sessions, destinations,
 - Email: `demo@lume.travel`
 - Mật khẩu: `lume2025`
 
+## Bảo mật tài khoản
+
+- Mật khẩu được băm bằng PBKDF2-HMAC-SHA256, không lưu mật khẩu gốc.
+- Session được lưu dưới dạng hash trong database; token chỉ nằm trong cookie `HttpOnly`.
+- Cookie dùng `SameSite=Lax` và tự bật `Secure` khi chạy HTTPS trên Render.
+- Đăng nhập sai quá 5 lần trong 15 phút từ cùng địa chỉ sẽ bị giới hạn tạm thời.
+- Đặt `FORCE_SECURE_COOKIES=1` nếu triển khai sau proxy HTTPS nhưng không dùng URL Render mặc định.
+
 ## API chính
 
 - `POST /api/login`: đăng nhập
