@@ -188,7 +188,46 @@
         document.querySelector('#review-form').addEventListener('submit', async event => { event.preventDefault(); const formElement = event.target; const form = new FormData(formElement); const payload = { name:String(form.get('name')).trim(), comment:String(form.get('comment')).trim(), rating:Number(form.get('rating')) }; try { const response = await fetch('/api/reviews', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload) }); const result = await response.json(); if (!response.ok) throw new Error(result.message); const card = document.createElement('article'); card.className = 'review-card'; card.innerHTML = `<div class="stars">${'★'.repeat(payload.rating)}${'☆'.repeat(5 - payload.rating)}</div><p>“${payload.comment.replace(/[<>]/g, '')}”</p><div class="review-author"><strong>${payload.name.replace(/[<>]/g, '')}</strong><span>Đánh giá mới · hôm nay</span></div>`; document.querySelector('#review-list').prepend(card); formElement.reset(); formElement.querySelector('.review-status').textContent = result.message; setTimeout(() => formElement.querySelector('.review-status').textContent = '', 4000); } catch (error) { formElement.querySelector('.review-status').textContent = error.message || 'Không thể lưu đánh giá lúc này.'; } });
         document.querySelector('#booking-form').addEventListener('submit', async event => { event.preventDefault(); const formElement = event.target; const form = new FormData(formElement); const payload = { destination:form.get('destination'), travelers:form.get('travelers'), date:form.get('date'), email:form.get('email'), note:form.get('note') }; const status = formElement.querySelector('.booking-status'); try { const response = await fetch('/api/bookings', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload) }); const result = await response.json(); if (!response.ok) throw new Error(result.message); status.textContent = `Đã nhận yêu cầu cho ${payload.destination}. Lume sẽ liên hệ qua email của bạn.`; formElement.reset(); } catch (error) { status.textContent = error.message || 'Không thể gửi yêu cầu lúc này.'; } });
         const loginModal = document.querySelector('#login-modal');
-        document.querySelector('.login-btn').addEventListener('click', () => loginModal.classList.add('open'));
+        const loginButton = document.querySelector('.login-btn');
+        const loginBox = loginModal.querySelector('.login-modal');
+        const authTabs = loginModal.querySelector('.auth-tabs');
+        const authForms = loginModal.querySelectorAll('.auth-form');
+        const authDivider = loginModal.querySelector('.auth-divider');
+        const socialOptions = loginModal.querySelector('.social-options');
+        const accountMessage = document.createElement('p');
+        const logoutButton = document.createElement('button');
+        accountMessage.className = 'login-message';
+        accountMessage.setAttribute('aria-live', 'polite');
+        logoutButton.className = 'login-submit';
+        logoutButton.type = 'button';
+        logoutButton.textContent = 'Đăng xuất';
+        logoutButton.hidden = true;
+        loginBox.insertBefore(accountMessage, authTabs);
+        loginBox.appendChild(logoutButton);
+        function setAuthState(user) {
+            const signedIn = Boolean(user);
+            loginButton.textContent = signedIn ? user.name : 'Đăng nhập';
+            loginButton.setAttribute('aria-label', signedIn ? `Tài khoản ${user.name}` : 'Đăng nhập');
+            loginModal.querySelector('#login-title').textContent = signedIn ? 'Tài khoản của bạn.' : 'Chào bạn trở lại.';
+            loginModal.querySelector('.login-modal > p:not(.login-message)').textContent = signedIn ? 'Phiên đăng nhập của bạn đang được bảo vệ.' : 'Đăng nhập để lưu lại những nơi bạn muốn đến.';
+            accountMessage.textContent = signedIn ? `${user.name} · ${user.email}` : '';
+            accountMessage.className = signedIn ? 'login-message success' : 'login-message';
+            authTabs.hidden = signedIn;
+            authForms.forEach(form => { form.hidden = signedIn; });
+            authDivider.hidden = signedIn;
+            socialOptions.hidden = signedIn;
+            logoutButton.hidden = !signedIn;
+        }
+        async function refreshAuthState() {
+            try {
+                const response = await fetch('/api/me');
+                setAuthState(response.ok ? (await response.json()).user : null);
+            } catch { setAuthState(null); }
+        }
+        loginButton.addEventListener('click', () => { loginModal.classList.add('open'); refreshAuthState(); });
+        logoutButton.addEventListener('click', async () => { await fetch('/api/logout', { method:'POST' }); setAuthState(null); loginModal.classList.remove('open'); });
+        authForms.forEach(form => form.addEventListener('submit', () => setTimeout(refreshAuthState, 400)));
+        refreshAuthState();
         document.querySelector('.close-modal').addEventListener('click', () => loginModal.classList.remove('open'));
         loginModal.addEventListener('click', event => { if (event.target === loginModal) loginModal.classList.remove('open'); });
         document.querySelectorAll('.auth-tab').forEach(tab => tab.addEventListener('click', () => { document.querySelectorAll('.auth-tab').forEach(item => item.classList.remove('active')); document.querySelectorAll('.auth-form').forEach(form => form.classList.remove('active')); tab.classList.add('active'); document.querySelector(`[data-auth-form="${tab.dataset.authMode}"]`).classList.add('active'); }));
