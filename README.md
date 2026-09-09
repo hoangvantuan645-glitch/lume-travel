@@ -93,7 +93,18 @@ $env:GEMINI_API_KEY = "your-key"
 py server.py
 ```
 
-Hoặc dùng `OPENAI_API_KEY` và tùy chọn `OPENAI_MODEL`.
+Gemini có thể chọn model bằng `GEMINI_MODEL` (mặc định `gemini-2.0-flash`). Có thể dùng OpenAI bằng `OPENAI_API_KEY` và tùy chọn `OPENAI_MODEL`.
+
+Để dùng GitHub Models (thay cho Copilot API trực tiếp), đặt token có quyền gọi model:
+
+```powershell
+$env:AI_PROVIDER = "github"
+$env:GITHUB_TOKEN = "your-github-token"
+$env:GITHUB_MODEL = "openai/gpt-4o-mini"
+py server.py
+```
+
+Trên Render, thêm các biến này trong Environment. Gói Copilot cá nhân không cung cấp API key để server gọi trực tiếp.
 
 Nếu chưa có API key, trợ lý vẫn hoạt động với các câu trả lời local cho Kyoto, Bali, Ninh Bình, Phú Yên, chuyến đi 3 ngày và tư vấn tiết kiệm.
 

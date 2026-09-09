@@ -268,7 +268,10 @@ def ask_ai(message: str, history: list[dict]) -> str:
     provider = os.getenv("AI_PROVIDER", "").lower()
     gemini_key = os.getenv("GEMINI_API_KEY")
     openai_key = os.getenv("OPENAI_API_KEY")
-    if provider == "openai" and openai_key:
+    github_token = os.getenv("GITHUB_TOKEN")
+    if provider == "github" and github_token:
+        selected_provider = "github"
+    elif provider == "openai" and openai_key:
         selected_provider = "openai"
     elif provider == "gemini" and gemini_key:
         selected_provider = "gemini"
@@ -285,7 +288,8 @@ def ask_ai(message: str, history: list[dict]) -> str:
         contents.extend({"role": "model" if item.get("role") == "assistant" else "user", "parts": [{"text": item.get("content", "")}]} for item in history[-8:])
         contents.append({"role": "user", "parts": [{"text": message}]})
         payload = json.dumps({"contents": contents, "generationConfig": {"temperature": 0.7, "maxOutputTokens": 500}}).encode()
-        request = urllib.request.Request(f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={gemini_key}", data=payload, headers={"Content-Type": "application/json"}, method="POST")
+        model = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
+        request = urllib.request.Request(f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={gemini_key}", data=payload, headers={"Content-Type": "application/json"}, method="POST")
         with urllib.request.urlopen(request, timeout=30) as response:
             result = json.loads(response.read().decode())
         return result["candidates"][0]["content"]["parts"][0]["text"]
@@ -293,8 +297,16 @@ def ask_ai(message: str, history: list[dict]) -> str:
     messages = [{"role": "system", "content": system_prompt}]
     messages.extend({"role": item.get("role", "user"), "content": item.get("content", "")} for item in history[-8:])
     messages.append({"role": "user", "content": message})
-    payload = json.dumps({"model": os.getenv("OPENAI_MODEL", "gpt-4o-mini"), "messages": messages, "temperature": 0.7, "max_tokens": 500}).encode()
-    request = urllib.request.Request("https://api.openai.com/v1/chat/completions", data=payload, headers={"Content-Type": "application/json", "Authorization": f"Bearer {openai_key}"}, method="POST")
+    if selected_provider == "github":
+        endpoint = os.getenv("GITHUB_MODELS_ENDPOINT", "https://models.github.ai/inference/chat/completions")
+        model = os.getenv("GITHUB_MODEL", "openai/gpt-4o-mini")
+        api_key = github_token
+    else:
+        endpoint = "https://api.openai.com/v1/chat/completions"
+        model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+        api_key = openai_key
+    payload = json.dumps({"model": model, "messages": messages, "temperature": 0.7, "max_tokens": 500}).encode()
+    request = urllib.request.Request(endpoint, data=payload, headers={"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"}, method="POST")
     with urllib.request.urlopen(request, timeout=30) as response:
         result = json.loads(response.read().decode())
     return result["choices"][0]["message"]["content"]
