@@ -12,7 +12,7 @@ Lume Travel là một travel storefront chạy local, kết hợp giao diện re
 - Xem thông tin chi tiết điểm đến và mở vị trí trên Google Earth.
 - Gửi form đặt tư vấn, đăng ký newsletter và thêm đánh giá.
 - Đăng nhập và đăng ký tài khoản với Neon PostgreSQL hoặc SQLite fallback.
-- Chatbot hỗ trợ tư vấn điểm đến qua API backend.
+- Chatbot hỗ trợ tư vấn điểm đến qua API backend, có local fallback khi chưa cấu hình API key.
 - Chế độ sáng/tối được lưu trong trình duyệt.
 - Âm thanh nền tùy chọn bằng Web Audio API, không tự phát khi chưa có tương tác.
 - Danh sách điểm đến có thể tự đồng bộ từ API mỗi giờ.
@@ -69,7 +69,7 @@ Schema PostgreSQL nằm trong `schema.sql`, gồm users, sessions, destinations,
 
 ## Cấu hình chatbot AI
 
-Đặt một trong các biến môi trường trước khi chạy server:
+Đặt một trong các biến môi trường trước khi chạy server để dùng AI bên ngoài:
 
 ```powershell
 $env:GEMINI_API_KEY = "your-key"
@@ -77,5 +77,7 @@ py server.py
 ```
 
 Hoặc dùng `OPENAI_API_KEY` và tùy chọn `OPENAI_MODEL`.
+
+Nếu chưa có API key, trợ lý vẫn hoạt động với các câu trả lời local cho Kyoto, Bali, Ninh Bình, Phú Yên, chuyến đi 3 ngày và tư vấn tiết kiệm.
 
 Database `lume.db` được tạo và cập nhật tự động trong cùng folder.

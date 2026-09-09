@@ -223,7 +223,7 @@ def ask_ai(message: str, history: list[dict]) -> str:
     elif openai_key:
         selected_provider = "openai"
     else:
-        raise RuntimeError("Chưa cấu hình GEMINI_API_KEY hoặc OPENAI_API_KEY trên server.")
+        return local_assistant_reply(message)
 
     system_prompt = "Bạn là Lume AI, một trợ lý du lịch thân thiện. Trả lời bằng tiếng Việt, thực tế và ngắn gọn. Khi tư vấn lịch trình, hãy hỏi thêm ngân sách, số ngày hoặc sở thích nếu cần. Không bịa thông tin chắc chắn về giá, visa hoặc thời tiết hiện tại."
     if selected_provider == "gemini":
@@ -244,6 +244,25 @@ def ask_ai(message: str, history: list[dict]) -> str:
     with urllib.request.urlopen(request, timeout=30) as response:
         result = json.loads(response.read().decode())
     return result["choices"][0]["message"]["content"]
+
+
+def local_assistant_reply(message: str) -> str:
+    """Keep the assistant useful when no external AI key is configured."""
+    question = message.lower()
+    destinations = {
+        "kyoto": "Kyoto hợp nhất vào tháng 3–4 hoặc 10–11. Bạn có thể đi chậm qua Arashiyama, Kiyomizu-dera và dành một buổi cho trà đạo.",
+        "bali": "Bali phù hợp từ tháng 4–10. Lịch trình cân bằng có thể gồm Ubud, ruộng bậc thang và một buổi ngắm hoàng hôn ở Uluwatu.",
+        "ninh bình": "Ninh Bình hợp cho chuyến 3 ngày 2 đêm: đi thuyền Tràng An buổi sớm, đạp xe qua Tam Cốc và ngắm hoàng hôn từ Hang Múa.",
+        "phú yên": "Phú Yên đẹp nhất khi đi chậm: đón bình minh ở Mũi Điện, ghé Gành Đá Đĩa và ăn hải sản bên đầm Ô Loan.",
+    }
+    for destination, reply in destinations.items():
+        if destination in question:
+            return reply + " Bạn muốn mình gợi ý theo ngân sách hay số ngày?"
+    if any(word in question for word in ("tiết kiệm", "ngân sách", "rẻ")):
+        return "Để đi tiết kiệm, hãy chọn chuyến 2–3 ngày, đặt phương tiện sớm và ưu tiên điểm đến trong nước như Ninh Bình, Phú Yên hoặc Sa Pa. Bạn dự kiến ngân sách bao nhiêu?"
+    if any(word in question for word in ("3 ngày", "ba ngày", "3 hôm")):
+        return "Với 3 ngày, Ninh Bình là lựa chọn dễ đi và đủ thư giãn. Lume gợi ý 1 ngày Tràng An, 1 ngày Tam Cốc – Hang Múa và 1 ngày dành cho cafe, đạp xe quanh làng quê."
+    return "Mình có thể tư vấn Ninh Bình, Phú Yên, Kyoto, Bali hoặc các chuyến đi tiết kiệm. Bạn muốn đi trong bao nhiêu ngày và ngân sách khoảng bao nhiêu?"
 
 
 class LumeHandler(BaseHTTPRequestHandler):
