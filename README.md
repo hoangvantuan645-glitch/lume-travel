@@ -11,7 +11,7 @@ Lume Travel là một travel storefront chạy local, kết hợp giao diện re
 - Khám phá và lọc các hành trình theo biển, núi, văn hóa hoặc sống chậm.
 - Xem thông tin chi tiết điểm đến và mở vị trí trên Google Earth.
 - Gửi form đặt tư vấn, đăng ký newsletter và thêm đánh giá.
-- Đăng nhập và đăng ký tài khoản với SQLite.
+- Đăng nhập và đăng ký tài khoản với Neon PostgreSQL hoặc SQLite fallback.
 - Chatbot hỗ trợ tư vấn điểm đến qua API backend.
 - Chế độ sáng/tối được lưu trong trình duyệt.
 - Âm thanh nền tùy chọn bằng Web Audio API, không tự phát khi chưa có tương tác.
@@ -24,6 +24,7 @@ Lume Travel là một travel storefront chạy local, kết hợp giao diện re
 - SQLite
 - Web Audio API
 - Gemini hoặc OpenAI API tùy cấu hình
+- Neon PostgreSQL với Psycopg 3
 
 ## Chạy local
 
@@ -36,6 +37,23 @@ py server.py
 Sau đó mở http://localhost:3000
 
 Hoặc chạy `start.bat` bằng double-click.
+
+## Kết nối Neon
+
+Cài dependencies:
+
+```powershell
+pip install -r requirements.txt
+```
+
+Đặt connection string Neon vào biến môi trường `DATABASE_URL` rồi chạy server. Backend sẽ tự tạo bảng và seed các điểm đến lần đầu khởi động. Nếu không có `DATABASE_URL`, ứng dụng tự dùng `lume.db` để chạy local.
+
+```powershell
+$env:DATABASE_URL = "postgresql://user:password@host/dbname?sslmode=require"
+py server.py
+```
+
+Schema PostgreSQL nằm trong `schema.sql`, gồm users, sessions, destinations, bookings, reviews, newsletter_subscribers và chat_messages.
 
 ## Tài khoản demo
 

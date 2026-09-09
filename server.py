@@ -13,8 +13,16 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse
 
+try:
+    import psycopg
+    from psycopg.rows import dict_row
+except ImportError:
+    psycopg = None
+    dict_row = None
+
 ROOT = Path(__file__).parent
 DATABASE = ROOT / "lume.db"
+DATABASE_URL = os.getenv("DATABASE_URL") or os.getenv("NEON_DATABASE_URL") or os.getenv("POSTGRES_URL")
 PORT = 3000
 PASSWORD_ITERATIONS = 600_000
 DEMO_EMAIL = "demo@lume.travel"
@@ -55,13 +63,30 @@ def verify_password(password: str, stored_hash: str) -> bool:
         return False
 
 
-def get_connection() -> sqlite3.Connection:
+def is_postgres() -> bool:
+    return bool(DATABASE_URL)
+
+
+def get_connection():
+    if is_postgres():
+        if psycopg is None:
+            raise RuntimeError("Đã cấu hình DATABASE_URL nhưng chưa cài psycopg. Chạy: pip install -r requirements.txt")
+        return psycopg.connect(DATABASE_URL, row_factory=dict_row)
     connection = sqlite3.connect(DATABASE)
     connection.row_factory = sqlite3.Row
     return connection
 
 
+def execute(connection, query: str, parameters: tuple = ()):
+    if is_postgres():
+        query = query.replace("?", "%s")
+    return connection.execute(query, parameters)
+
+
 def initialize_database() -> None:
+    if is_postgres():
+        initialize_postgres_database()
+        return
     with get_connection() as connection:
         connection.executescript(
             """
@@ -82,15 +107,49 @@ def initialize_database() -> None:
                 expires_at TEXT NOT NULL,
                 FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
             );
+            CREATE TABLE IF NOT EXISTS bookings (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER,
+                destination TEXT NOT NULL,
+                travelers TEXT NOT NULL,
+                travel_month TEXT NOT NULL,
+                email TEXT NOT NULL,
+                note TEXT,
+                status TEXT NOT NULL DEFAULT 'new',
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
+            );
+            CREATE TABLE IF NOT EXISTS reviews (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER,
+                name TEXT NOT NULL,
+                rating INTEGER NOT NULL CHECK (rating BETWEEN 1 AND 5),
+                comment TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
+            );
+            CREATE TABLE IF NOT EXISTS newsletter_subscribers (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                email TEXT NOT NULL UNIQUE COLLATE NOCASE,
+                subscribed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE TABLE IF NOT EXISTS chat_messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER,
+                role TEXT NOT NULL CHECK (role IN ('user', 'assistant')),
+                content TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
+            );
             """
         )
-        demo = connection.execute("SELECT id FROM users WHERE email = ?", (DEMO_EMAIL,)).fetchone()
+        demo = execute(connection, "SELECT id FROM users WHERE email = ?", (DEMO_EMAIL,)).fetchone()
         if demo is None:
-            connection.execute(
+            execute(connection,
                 "INSERT INTO users (email, name, password_hash, created_at) VALUES (?, ?, ?, ?)",
                 (DEMO_EMAIL, "Lume explorer", hash_password(DEMO_PASSWORD), utc_now()),
             )
-        connection.execute(
+        execute(connection,
             """
             CREATE TABLE IF NOT EXISTS destinations (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -104,7 +163,7 @@ def initialize_database() -> None:
             )
             """
         )
-        if connection.execute("SELECT COUNT(*) FROM destinations").fetchone()[0] == 0:
+        if execute(connection, "SELECT COUNT(*) FROM destinations").fetchone()[0] == 0:
             start_time = datetime.now(timezone.utc)
             connection.executemany(
                 "INSERT INTO destinations (name, type, place, price, image, available_at, published) VALUES (?, ?, ?, ?, ?, ?, ?)",
@@ -112,18 +171,39 @@ def initialize_database() -> None:
             )
 
 
+def initialize_postgres_database() -> None:
+    schema_path = ROOT / "schema.sql"
+    with get_connection() as connection:
+        connection.execute(schema_path.read_text(encoding="utf-8"))
+        connection.execute(
+            """
+            INSERT INTO users (email, name, password_hash, created_at)
+            VALUES (%s, %s, %s, %s)
+            ON CONFLICT (email) DO NOTHING
+            """,
+            (DEMO_EMAIL, "Lume explorer", hash_password(DEMO_PASSWORD), utc_now()),
+        )
+        count = connection.execute("SELECT COUNT(*) AS count FROM destinations").fetchone()["count"]
+        if count == 0:
+            start_time = datetime.now(timezone.utc)
+            connection.executemany(
+                "INSERT INTO destinations (name, type, place, price, image, available_at, published) VALUES (%s, %s, %s, %s, %s, %s, %s)",
+                [(name, kind, place, price, image, start_time + timedelta(hours=max(0, index - 5)), index < 6) for index, (name, kind, place, price, image) in enumerate(DESTINATION_CATALOG)],
+            )
+
+
 def get_destinations() -> list[dict]:
     now = utc_now()
     with get_connection() as connection:
-        connection.execute("UPDATE destinations SET published = 1 WHERE published = 0 AND available_at <= ?", (now,))
-        rows = connection.execute("SELECT name, type, place, price, image FROM destinations WHERE published = 1 ORDER BY id").fetchall()
+        execute(connection, "UPDATE destinations SET published = 1 WHERE published = 0 AND available_at <= ?", (now,))
+        rows = execute(connection, "SELECT name, type, place, price, image FROM destinations WHERE published = 1 ORDER BY id").fetchall()
     return [dict(row) for row in rows]
 
 
 def create_session(connection: sqlite3.Connection, user_id: int) -> str:
     token = secrets.token_urlsafe(32)
     token_hash = hashlib.sha256(token.encode()).hexdigest()
-    connection.execute(
+    execute(connection,
         "INSERT INTO sessions (user_id, token_hash, created_at, expires_at) VALUES (?, ?, ?, ?)",
         (user_id, token_hash, utc_now(), (datetime.now(timezone.utc) + timedelta(days=7)).isoformat()),
     )
@@ -197,6 +277,36 @@ class LumeHandler(BaseHTTPRequestHandler):
                     return self.send_json(503, {"message": "Trợ lý AI chưa được cấu hình. Hãy thêm GEMINI_API_KEY hoặc OPENAI_API_KEY trên server."})
                 except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError):
                     return self.send_json(502, {"message": "Không kết nối được tới dịch vụ AI lúc này."})
+            if route == "/api/bookings":
+                destination = str(data.get("destination", "")).strip()
+                travelers = str(data.get("travelers", "")).strip()
+                travel_month = str(data.get("date", "")).strip()
+                email = str(data.get("email", "")).strip().lower()
+                note = str(data.get("note", "")).strip()[:1_000]
+                if not destination or not travelers or not travel_month or "@" not in email:
+                    return self.send_json(400, {"message": "Vui lòng điền đủ thông tin đặt tư vấn."})
+                with get_connection() as connection:
+                    execute(connection, "INSERT INTO bookings (destination, travelers, travel_month, email, note) VALUES (?, ?, ?, ?, ?)", (destination, travelers, travel_month, email, note))
+                return self.send_json(201, {"message": "Đã nhận yêu cầu tư vấn."})
+            if route == "/api/reviews":
+                name = str(data.get("name", "")).strip()[:100]
+                comment = str(data.get("comment", "")).strip()[:1_000]
+                rating = int(data.get("rating", 0))
+                if not name or not comment or rating not in range(1, 6):
+                    return self.send_json(400, {"message": "Đánh giá chưa hợp lệ."})
+                with get_connection() as connection:
+                    execute(connection, "INSERT INTO reviews (name, rating, comment) VALUES (?, ?, ?)", (name, rating, comment))
+                return self.send_json(201, {"message": "Đánh giá đã được lưu."})
+            if route == "/api/newsletter":
+                email = str(data.get("email", "")).strip().lower()
+                if "@" not in email:
+                    return self.send_json(400, {"message": "Email chưa hợp lệ."})
+                with get_connection() as connection:
+                    try:
+                        execute(connection, "INSERT INTO newsletter_subscribers (email) VALUES (?)", (email,))
+                    except (sqlite3.IntegrityError, psycopg.errors.UniqueViolation if psycopg else sqlite3.IntegrityError):
+                        pass
+                return self.send_json(201, {"message": "Đăng ký nhận tin thành công."})
             email = str(data.get("email", "")).strip().lower()
             password = str(data.get("password", ""))
             if not email or not password:
@@ -208,20 +318,21 @@ class LumeHandler(BaseHTTPRequestHandler):
                     if not name:
                         return self.send_json(400, {"message": "Vui lòng nhập tên của bạn."})
                     try:
-                        cursor = connection.execute(
-                            "INSERT INTO users (email, name, password_hash, created_at) VALUES (?, ?, ?, ?)",
-                            (email, name, hash_password(password), utc_now()),
-                        )
+                        insert_query = "INSERT INTO users (email, name, password_hash, created_at) VALUES (?, ?, ?, ?)"
+                        if is_postgres():
+                            insert_query += " RETURNING id"
+                        cursor = execute(connection, insert_query, (email, name, hash_password(password), utc_now()))
                     except sqlite3.IntegrityError:
                         return self.send_json(409, {"message": "Email này đã được đăng ký."})
-                    token = create_session(connection, cursor.lastrowid)
+                    user_id = cursor.fetchone()["id"] if is_postgres() else cursor.lastrowid
+                    token = create_session(connection, user_id)
                     return self.send_json(201, {"message": "Tạo tài khoản thành công.", "token": token, "user": {"email": email, "name": name}})
 
                 if route == "/api/login":
-                    user = connection.execute("SELECT * FROM users WHERE email = ?", (email,)).fetchone()
+                    user = execute(connection, "SELECT * FROM users WHERE email = ?", (email,)).fetchone()
                     if user is None or not verify_password(password, user["password_hash"]):
                         return self.send_json(401, {"message": "Email hoặc mật khẩu chưa đúng."})
-                    connection.execute("UPDATE users SET last_login_at = ? WHERE id = ?", (utc_now(), user["id"]))
+                    execute(connection, "UPDATE users SET last_login_at = ? WHERE id = ?", (utc_now(), user["id"]))
                     token = create_session(connection, user["id"])
                     return self.send_json(200, {"message": "Đăng nhập thành công.", "token": token, "user": {"email": user["email"], "name": user["name"]}})
 
