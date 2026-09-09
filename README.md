@@ -38,6 +38,15 @@ Sau đó mở http://localhost:3000
 
 Hoặc chạy `start.bat` bằng double-click.
 
+## Deploy trên Render
+
+Tạo một Web Service từ repository này. Render có thể tự nhận cấu hình trong `render.yaml`; nếu nhập thủ công, dùng:
+
+- Build command: `pip install -r requirements.txt`
+- Start command: `python server.py`
+
+Server tự đọc biến môi trường `PORT` do Render cấp và lắng nghe trên `0.0.0.0`.
+
 ## Kết nối Neon
 
 Cài dependencies:

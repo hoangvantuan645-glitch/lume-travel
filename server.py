@@ -23,7 +23,7 @@ except ImportError:
 ROOT = Path(__file__).parent
 DATABASE = ROOT / "lume.db"
 DATABASE_URL = os.getenv("DATABASE_URL") or os.getenv("NEON_DATABASE_URL") or os.getenv("POSTGRES_URL")
-PORT = 3000
+PORT = int(os.getenv("PORT", "3000"))
 PASSWORD_ITERATIONS = 600_000
 DEMO_EMAIL = "demo@lume.travel"
 DEMO_PASSWORD = "lume2025"
@@ -388,7 +388,7 @@ class LumeHandler(BaseHTTPRequestHandler):
 
 if __name__ == "__main__":
     initialize_database()
-    server = ThreadingHTTPServer(("127.0.0.1", PORT), LumeHandler)
-    print(f"Lume Travel đang chạy tại http://localhost:{PORT}")
+    server = ThreadingHTTPServer(("0.0.0.0", PORT), LumeHandler)
+    print(f"Lume Travel đang chạy trên port {PORT}")
     print(f"Demo login: {DEMO_EMAIL} / {DEMO_PASSWORD}")
     server.serve_forever()
